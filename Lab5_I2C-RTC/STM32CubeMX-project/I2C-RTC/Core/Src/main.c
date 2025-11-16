@@ -37,6 +37,13 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
+// I2C address definitions
+#define RTC_ADDR_WRITE 0xD0
+#define RTC_ADDR_READ  0xD1
+// LED pin
+#define READY_LED_GPIO GPIOB
+#define READY_LED_PIN  GPIO_PIN_3
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -45,6 +52,9 @@ I2C_HandleTypeDef hi2c1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+// Buffers for RTC registers
+uint8_t secbuffer[2], minbuffer[2], hourbuffer[2];
+char uartBuf[100];
 
 /* USER CODE END PV */
 
@@ -60,6 +70,69 @@ static void MX_I2C1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #include "stdio.h"
+
+/* ----- Convenience Functions ----- */
+
+// Blink LED to indicate RTC ready
+void RTC_ReadyIndicator(void)
+{
+    for (int i = 0; i < 10; i++)
+    {
+        HAL_GPIO_TogglePin(READY_LED_GPIO, READY_LED_PIN);
+        HAL_Delay(250);
+    }
+}
+
+// Initialize RTC: check device readiness
+void RTC_Init(void)
+{
+    if (HAL_I2C_IsDeviceReady(&hi2c1, RTC_ADDR_WRITE, 10, HAL_MAX_DELAY) == HAL_OK)
+    {
+        RTC_ReadyIndicator();
+    }
+}
+
+// Set RTC time (24h format, BCD)
+void RTC_SetTime(uint8_t hour, uint8_t minute, uint8_t second)
+{
+    secbuffer[0] = 0x00; // seconds register
+    secbuffer[1] = second;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 2, 10);
+
+    minbuffer[0] = 0x01; // minutes register
+    minbuffer[1] = minute;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 2, 10);
+
+    hourbuffer[0] = 0x02; // hours register
+    hourbuffer[1] = hour;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 2, 10);
+}
+
+// Read RTC time into buffers
+void RTC_ReadTime(void)
+{
+    // seconds
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, secbuffer + 1, 1, 10);
+
+    // minutes
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, minbuffer + 1, 1, 10);
+
+    // hours
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, hourbuffer + 1, 1, 10);
+
+    // mask upper hour bits (24h mode)
+    hourbuffer[1] &= 0x1F;
+}
+
+// Print time via UART
+void UART_PrintTime(void)
+{
+    sprintf(uartBuf, "%02x:%02x:%02x\r\n", hourbuffer[1], minbuffer[1], secbuffer[1]);
+    HAL_UART_Transmit(&huart2, (uint8_t *)uartBuf, sizeof(uartBuf), 10);
+}
 /* USER CODE END 0 */
 
 /**
@@ -93,57 +166,14 @@ int main(void)
   MX_USART2_UART_Init();
   MX_I2C1_Init();
 	/* USER CODE BEGIN 2 */
-	//check that device is ready to operate
-	if (HAL_I2C_IsDeviceReady(&hi2c1, 0xD0, 10, HAL_MAX_DELAY) == HAL_OK)
-	{
-			for (int i = 1; i <= 10; i++) // indicator of ready device
-			{
-					HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_3);
-					HAL_Delay(250);
-			}
-	}
+	RTC_Init();               // Check RTC and blink LED
+	RTC_SetTime(0x47, 0x15, 0x35); // Set initial time 07:15:35 (BCD)
 
-	//Transmit via I2C to set clock to 7:15:35 am
-	uint8_t secbuffer[2], minbuffer[2], hourbuffer[2];
-
-	// seconds
-	secbuffer[0] = 0x00; //register address
-	secbuffer[1] = 0x35; //data to put in register --> 35 sec
-	HAL_I2C_Master_Transmit(&hi2c1, 0xD0, secbuffer, 2, 10);
-
-	// minutes
-	minbuffer[0] = 0x01; //register address
-	minbuffer[1] = 0x15; //data to put in register --> 15 min
-	HAL_I2C_Master_Transmit(&hi2c1, 0xD0, minbuffer, 2, 10);
-
-	// hours
-	hourbuffer[0] = 0x02; //register address
-	hourbuffer[1] = 0x47; //data to put in register 01001001 --> 7 am
-	HAL_I2C_Master_Transmit(&hi2c1, 0xD0, hourbuffer, 2, 10);
-
-	char uartBuf[100] = {0};
-
-	//Receive via I2C and forward to UART
 	while (1)
 	{
-			//send seconds register address 00h to read from
-			HAL_I2C_Master_Transmit(&hi2c1, 0xD0, secbuffer, 1, 10);
-			//read data of register 00h to secbuffer[1]
-			HAL_I2C_Master_Receive(&hi2c1, 0xD1, secbuffer + 1, 1, 10);
-
-			HAL_I2C_Master_Transmit(&hi2c1, 0xD0, minbuffer, 1, 10);
-			HAL_I2C_Master_Receive(&hi2c1, 0xD1, minbuffer + 1, 1, 10);
-
-			HAL_I2C_Master_Transmit(&hi2c1, 0xD0, hourbuffer, 1, 10);
-			HAL_I2C_Master_Receive(&hi2c1, 0xD1, hourbuffer + 1, 1, 10);
-
-			hourbuffer[1] = hourbuffer[1] & 0x1F;
-
-			// transmit time to UART
-			sprintf(uartBuf, "%02x:%02x:%02x\r\n", hourbuffer[1], minbuffer[1], secbuffer[1]);
-			HAL_UART_Transmit(&huart2, (uint8_t *)uartBuf, sizeof(uartBuf), 10);
-
-			HAL_Delay(1000);
+			RTC_ReadTime();       // Read time from RTC
+			UART_PrintTime();     // Send to UART
+			HAL_Delay(1000);      // 1-second delay
 	}
 	/* USER CODE END 2 */
 
