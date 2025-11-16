@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body with RTC Alarm 1 functionality
+  * @brief          : Main program body
   ******************************************************************************
   * @attention
   *
@@ -40,22 +40,9 @@
 // I2C address definitions
 #define RTC_ADDR_WRITE 0xD0
 #define RTC_ADDR_READ  0xD1
-
-// RTC Register addresses
-#define RTC_CONTROL_REG    0x0E
-#define RTC_STATUS_REG     0x0F
-#define RTC_ALARM1_SEC     0x07
-#define RTC_ALARM1_MIN     0x08
-#define RTC_ALARM1_HOUR    0x09
-#define RTC_ALARM1_DATE    0x0A
-
 // LED pin
 #define READY_LED_GPIO GPIOB
 #define READY_LED_PIN  GPIO_PIN_3
-
-// Buzzer pin - update this to your actual buzzer GPIO
-#define BUZZER_GPIO    GPIOB
-#define BUZZER_PIN     GPIO_PIN_4
 
 /* USER CODE END PM */
 
@@ -68,7 +55,6 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 // Buffers for RTC registers
 uint8_t secbuffer[2], minbuffer[2], hourbuffer[2];
-uint8_t txBuf[2];
 char uartBuf[100];
 
 /* USER CODE END PV */
@@ -108,20 +94,17 @@ void RTC_Init(void)
     }
 }
 
-// Set RTC time (12h or 24h format, BCD)
+// Set RTC time (24h format, BCD)
 void RTC_SetTime(uint8_t hour, uint8_t minute, uint8_t second)
 {
-    // seconds
     secbuffer[0] = 0x00; // seconds register
     secbuffer[1] = second;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 2, 10);
 
-    // minutes
     minbuffer[0] = 0x01; // minutes register
     minbuffer[1] = minute;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 2, 10);
 
-    // hours
     hourbuffer[0] = 0x02; // hours register
     hourbuffer[1] = hour;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 2, 10);
@@ -142,7 +125,7 @@ void RTC_ReadTime(void)
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 1, 10);
     HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, hourbuffer + 1, 1, 10);
 
-    // mask upper hour bits
+    // mask upper hour bits (24h mode)
     hourbuffer[1] &= 0x1F;
 }
 
@@ -152,89 +135,6 @@ void UART_PrintTime(void)
     sprintf(uartBuf, "%02x:%02x:%02x\r\n", hourbuffer[1], minbuffer[1], secbuffer[1]);
     HAL_UART_Transmit(&huart2, (uint8_t *)uartBuf, sizeof(uartBuf), 10);
 }
-
-// Set Alarm 1 on DS3231
-// hour, minute, second in BCD format
-void RTC_SetAlarm1(uint8_t hour, uint8_t minute, uint8_t second)
-{
-    // A1 Seconds (0x07)
-    txBuf[0] = RTC_ALARM1_SEC;
-    txBuf[1] = second;     // A1M1=0 ? match seconds
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-
-    // A1 Minutes (0x08)
-    txBuf[0] = RTC_ALARM1_MIN;
-    txBuf[1] = minute;     // A1M2=0 ? match minutes
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-
-    // A1 Hours (0x09)
-    txBuf[0] = RTC_ALARM1_HOUR;
-    txBuf[1] = hour;       // hour value (use 12h or 24h format as needed)
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-
-    // A1 Day/Date (0x0A)
-    txBuf[0] = RTC_ALARM1_DATE;
-    txBuf[1] = 0x80;       // A1M4=1 ? ignore day/date match
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-}
-
-// Enable Alarm 1 interrupt
-void RTC_EnableAlarm1(void)
-{
-    // Control register (0x0E)
-    txBuf[0] = RTC_CONTROL_REG;
-    txBuf[1] = 0x1D;       // INTCN=1 (bit2), A1IE=1 (bit0)
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-
-    // Clear status register (0x0F)
-    txBuf[0] = RTC_STATUS_REG;
-    txBuf[1] = 0x00;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
-}
-
-// Check if Alarm 1 has triggered
-uint8_t RTC_CheckAlarm1(void)
-{
-    uint8_t statusReg;
-    
-    // Read status register (0x0F)
-    txBuf[0] = RTC_STATUS_REG;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 1, 10);
-    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, &statusReg, 1, 10);
-    
-    // Check A1F (bit 0)
-    return (statusReg & 0x01);
-}
-
-// Clear Alarm 1 flag
-void RTC_ClearAlarm1Flag(void)
-{
-    uint8_t statusReg;
-    
-    // Read current status register (0x0F)
-    txBuf[0] = RTC_STATUS_REG;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 1, 10);
-    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, &statusReg, 1, 10);
-    
-    // Clear A1F (bit 0) flag
-    statusReg &= ~0x01;
-    
-    txBuf[0] = RTC_STATUS_REG;
-    txBuf[1] = statusReg;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, 10);
-}
-
-// Print message via UART
-void UART_PrintMessage(const char* msg)
-{
-    int len = 0;
-    // Calculate string length without strlen
-    while(msg[len] != '\0') {
-        len++;
-    }
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, 10);
-}
-
 /* USER CODE END 0 */
 
 /**
@@ -269,46 +169,15 @@ int main(void)
   MX_I2C1_Init();
   MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
-    RTC_Init();               // Check RTC and blink LED
-    
-    // Set initial time to 12:59:55 PM (12-hour format, PM bit set)
-    // 0x72 = 0b01110010 ? 12-hour mode (bit 6=1), PM (bit 5=1), hour=12
-    RTC_SetTime(0x72, 0x59, 0x55);
-    
-    // Set Alarm 1 to trigger at 1:00:00 PM
-    // 0x61 = 0b01100001 ? 12-hour mode (bit 6=1), PM (bit 5=1), hour=01
-    RTC_SetAlarm1(0x61, 0x00, 0x00);
-    
-    // Enable Alarm 1 interrupt
-    RTC_EnableAlarm1();
-    
-    UART_PrintMessage("RTC set to 12:59:55 PM, Alarm at 1:00:00 PM\r\n");
+	RTC_Init();               // Check RTC and blink LED
+	RTC_SetTime(0x47, 0x15, 0x35); // Set initial time 07:15:35 (BCD)
 
-    while (1)
-    {
-        RTC_ReadTime();       // Read time from RTC
-        UART_PrintTime();     // Send to UART
-        
-        // Check if alarm has triggered
-        if (RTC_CheckAlarm1())
-        {
-            UART_PrintMessage("ALARM TRIGGERED!\r\n");
-            
-            // Turn on buzzer
-            HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_SET);
-            
-            // Keep buzzer on for 5 seconds
-            HAL_Delay(5000);
-            
-            // Turn off buzzer
-            HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_RESET);
-            
-            // Clear the alarm flag
-            RTC_ClearAlarm1Flag();
-        }
-        
-        HAL_Delay(1000);      // 1-second delay
-    }
+	while (1)
+	{
+			RTC_ReadTime();       // Read time from RTC
+			UART_PrintTime();     // Send to UART
+			HAL_Delay(1000);      // 1-second delay
+	}
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -531,9 +400,6 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
-  
-  /*Configure GPIO pin Output Level for Buzzer */
-  HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : LD3_Pin */
   GPIO_InitStruct.Pin = LD3_Pin;
@@ -541,13 +407,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD3_GPIO_Port, &GPIO_InitStruct);
-  
-  /*Configure GPIO pin : BUZZER_PIN */
-  GPIO_InitStruct.Pin = BUZZER_PIN;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(BUZZER_GPIO, &GPIO_InitStruct);
 
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
