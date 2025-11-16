@@ -40,6 +40,7 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define STACK_BYTES(x) ((x) / sizeof(StackType_t))
+#define INPUT_BUFFER_SIZE 8
 
 
 /* USER CODE END PM */
@@ -302,19 +303,67 @@ static void MX_GPIO_Init(void)
 void start_calculation_task(void const * argument)
 {
     uint8_t received_byte;
+    char expr[INPUT_BUFFER_SIZE];
+    uint8_t idx = 0;
 
     for (;;)
     {
-        // Wait for a byte from the ISR queue
         if (xQueueReceive(ISR_to_calculationHandle, &received_byte, portMAX_DELAY) == pdTRUE)
         {
-            // Send the received byte over UART
-            HAL_UART_Transmit(&huart2, (uint8_t *)"1", 1, HAL_MAX_DELAY);
-        }
+            if (received_byte != '\n') // Not end of expression
+            {
+                if (idx < INPUT_BUFFER_SIZE - 1)
+                    expr[idx++] = received_byte;
+            }
+            else
+            {
+                expr[idx] = '\0'; // null-terminate
 
-        vTaskDelay(1); // Optional small delay
+                // Evaluate simple digit(+or-)digit expression
+                if (idx == 3 && (expr[1] == '+' || expr[1] == '-'))
+                {
+                    int a = expr[0] - '0';
+                    char op = expr[1];
+                    int b = expr[2] - '0';
+                    int result = (op == '+') ? (a + b) : (a - b);
+										
+										// Echo expression to print queue
+										for (uint8_t i = 0; i < idx; i++)
+												xQueueSend(calculation_to_printHandle, &expr[i], portMAX_DELAY);
+										
+										// Send newline to print queue
+                    uint8_t nl = '\n';
+										uint8_t cr = '\r';
+                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
+										xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
+
+
+                    // Send each digit of result to print queue
+                    if (result < 10)
+                    {
+                        uint8_t c = result + '0';
+                        xQueueSend(calculation_to_printHandle, &c, portMAX_DELAY);
+                    }
+                    else
+                    {
+                        uint8_t tens = (result / 10) + '0';
+                        uint8_t ones = (result % 10) + '0';
+                        xQueueSend(calculation_to_printHandle, &tens, portMAX_DELAY);
+                        xQueueSend(calculation_to_printHandle, &ones, portMAX_DELAY);
+                    }
+
+                    // Send newline to print queue
+                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
+                    xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
+                }
+
+                idx = 0; // reset buffer
+            }
+        }
+        vTaskDelay(1);
     }
 }
+
 
 /* USER CODE BEGIN Header_start_print_task */
 /* UART Rx Complete Callback --------------------------------------------------*/
@@ -322,14 +371,37 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2)
     {
-        // Send received byte to queue
-        uint8_t data = rx_data;
-        xQueueSendFromISR(ISR_to_calculationHandle, &data, NULL);
+        // Only accept digits or '+'/'-' or '\r'
+        if (((rx_data >= '0' && rx_data <= '9') || rx_data == '+' || rx_data == '-' || rx_data == '\r')
+             && buffer_index < INPUT_BUFFER_SIZE - 1)
+        {
+            if (rx_data != '\r')
+            {
+                // Store character in buffer
+                input_buffer[buffer_index++] = rx_data;
+            }
+            else
+            {
+								// Send all buffered characters to queue
+								for (uint8_t i = 0; i < buffer_index; i++)
+								{
+										xQueueSendFromISR(ISR_to_calculationHandle, &input_buffer[i], NULL);
+								}
+
+								// Optional: send a special delimiter to mark end of expression
+								char delimiter = '\n';
+								xQueueSendFromISR(ISR_to_calculationHandle, &delimiter, NULL);
+								
+                // Reset buffer for next input
+                buffer_index = 0;
+            }
+        }
 
         // Re-arm UART reception
         HAL_UART_Receive_IT(&huart2, &rx_data, 1);
     }
 }
+
 /**
 * @brief Function implementing the print_task thread.
 * @param argument: Not used
@@ -338,14 +410,19 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 /* USER CODE END Header_start_print_task */
 void start_print_task(void const * argument)
 {
-  /* USER CODE BEGIN start_print_task */
-  /* Infinite loop */
-  for(;;)
-  {
-    osDelay(1);
-  }
-  /* USER CODE END start_print_task */
+    uint8_t c;
+		
+    for (;;)
+    {
+        if (xQueueReceive(calculation_to_printHandle, &c, portMAX_DELAY) == pdTRUE)
+        {
+						taskENTER_CRITICAL();
+						HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
+						taskEXIT_CRITICAL();
+        }
+    }
 }
+
 
 /**
   * @brief  Period elapsed callback in non blocking mode
