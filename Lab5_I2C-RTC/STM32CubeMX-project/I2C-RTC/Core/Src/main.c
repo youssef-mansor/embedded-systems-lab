@@ -2,12 +2,16 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : RTC Full Date-Time Display & Alarm 2 (Date/Hour/Minute Match)
+  * @brief          : Main program body with RTC Alarm 1 and UART input
   ******************************************************************************
   * @attention
   *
   * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
   */
@@ -17,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stdio.h"
+#include "string.h"
+#include "stdlib.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,57 +38,82 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
+
+// I2C address definitions
 #define RTC_ADDR_WRITE 0xD0
 #define RTC_ADDR_READ  0xD1
+
+// RTC Register addresses
 #define RTC_CONTROL_REG    0x0E
 #define RTC_STATUS_REG     0x0F
-#define RTC_ALARM2_MIN     0x0B
-#define RTC_ALARM2_HOUR    0x0C
-#define RTC_ALARM2_DATE    0x0D
+#define RTC_ALARM1_SEC     0x07
+#define RTC_ALARM1_MIN     0x08
+#define RTC_ALARM1_HOUR    0x09
+#define RTC_ALARM1_DATE    0x0A
+
+// LED pin
 #define READY_LED_GPIO GPIOB
 #define READY_LED_PIN  GPIO_PIN_3
+
+// Buzzer pin
 #define BUZZER_GPIO    GPIOB
 #define BUZZER_PIN     GPIO_PIN_4
+
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
-
-SPI_HandleTypeDef hspi1;
-SPI_HandleTypeDef hspi3;
+I2C_HandleTypeDef hi2c3;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-char uartBuf[100];
+// Buffers for RTC registers
+uint8_t secbuffer[2] = {0x00, 0x00};
+uint8_t minbuffer[2] = {0x01, 0x00};
+uint8_t hourbuffer[2] = {0x02, 0x00};
 uint8_t txBuf[2];
+char uartBuf[100];
+
+// UART input variables
+uint8_t rx_char;
+char input_buffer[7] = {0};  // Buffer for 6 digits + null terminator
+volatile uint8_t input_index = 0;
+volatile uint8_t new_alarm_ready = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_SPI1_Init(void);
-static void MX_SPI3_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_I2C3_Init(void);
+
 /* USER CODE BEGIN PFP */
-void RTC_ReadyIndicator(void);
-void RTC_Init(void);
-void RTC_SetDateTime(uint8_t hour, uint8_t minute, uint8_t second,
-                     uint8_t day_of_week, uint8_t date, uint8_t month, uint8_t year);
-void RTC_ReadDateTime(uint8_t *hour, uint8_t *minute, uint8_t *second,
-                      uint8_t *day_of_week, uint8_t *date, uint8_t *month, uint8_t *year);
-void UART_PrintDateTime(uint8_t hour, uint8_t minute, uint8_t second,
-                        uint8_t date, uint8_t month, uint8_t year, uint8_t day_of_week);
-void UART_PrintMessage(const char *msg);
-void RTC_SetAlarm2(uint8_t date, uint8_t hour, uint8_t minute);
-void RTC_EnableAlarm2(void);
-uint8_t RTC_CheckAlarm2(void);
-void RTC_ClearAlarm2Flag(void);
+void UART_PrintMessage(const char* msg);
+
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* ----- Utility Functions ----- */
+
+// Convert decimal to BCD
+uint8_t decToBcd(uint8_t val)
+{
+    return ((val / 10) << 4) | (val % 10);
+}
+
+// Convert BCD to decimal
+uint8_t bcdToDec(uint8_t val)
+{
+    return ((val >> 4) * 10) + (val & 0x0F);
+}
+
+/* ----- RTC Functions ----- */
 
 // Blink LED to indicate RTC ready
 void RTC_ReadyIndicator(void)
@@ -101,86 +132,87 @@ void RTC_Init(void)
     {
         RTC_ReadyIndicator();
     }
-}
-
-// Set full date & time
-void RTC_SetDateTime(uint8_t hour, uint8_t minute, uint8_t second,
-                     uint8_t day_of_week, uint8_t date, uint8_t month, uint8_t year)
-{
-    uint8_t buffer[2];
-
-    buffer[0] = 0x00; buffer[1] = second;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x01; buffer[1] = minute;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x02; buffer[1] = hour;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x03; buffer[1] = day_of_week;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x04; buffer[1] = date;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x05; buffer[1] = month;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-    buffer[0] = 0x06; buffer[1] = year;
-    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 2, 10);
-}
-
-// Read full date & time
-void RTC_ReadDateTime(uint8_t *hour, uint8_t *minute, uint8_t *second,
-                      uint8_t *day_of_week, uint8_t *date, uint8_t *month, uint8_t *year)
-{
-    uint8_t buffer[2];
-    buffer[0] = 0x00; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *second = buffer[1];
-    buffer[0] = 0x01; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *minute = buffer[1];
-    buffer[0] = 0x02; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *hour = buffer[1] & 0x3F;
-    buffer[0] = 0x03; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *day_of_week = buffer[1];
-    buffer[0] = 0x04; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *date = buffer[1];
-    buffer[0] = 0x05; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *month = buffer[1];
-    buffer[0] = 0x06; HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, buffer, 1, 10); HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, buffer+1, 1, 10); *year = buffer[1];
-}
-
-// Print full date & time via UART
-void UART_PrintDateTime(uint8_t hour, uint8_t minute, uint8_t second,
-                        uint8_t date, uint8_t month, uint8_t year, uint8_t day_of_week)
-{
-    sprintf(uartBuf, "20%02x-%02x-%02x %02x:%02x:%02x (Day %d)\r\n", year, month, date, hour, minute, second, day_of_week);
-    HAL_UART_Transmit(&huart2, (uint8_t *)uartBuf, sizeof(uartBuf), 10);
-}
-
-// Print message via UART (no strlen)
-void UART_PrintMessage(const char *msg)
-{
-    int len = 0;
-    while (msg[len] != '\0') {
-        len++;
+    else
+    {
+        UART_PrintMessage("ERROR: RTC not detected!\r\n");
     }
-    HAL_UART_Transmit(&huart2, (uint8_t *)msg, len, 10);
 }
 
-// Set Alarm2: match date, hour, minute
-void RTC_SetAlarm2(uint8_t date, uint8_t hour, uint8_t minute)
+// Set RTC time (24h format, BCD)
+void RTC_SetTime(uint8_t hour, uint8_t minute, uint8_t second)
 {
-    // Match minute (A2M2=0, MSB cleared)
-    txBuf[0] = RTC_ALARM2_MIN;
-    txBuf[1] = minute & 0x7F;
+    // seconds
+    secbuffer[0] = 0x00;
+    secbuffer[1] = second;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 2, 10);
+
+    // minutes
+    minbuffer[0] = 0x01;
+    minbuffer[1] = minute;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 2, 10);
+
+    // hours (24-hour format: bit 6 = 0)
+    hourbuffer[0] = 0x02;
+    hourbuffer[1] = hour & 0x3F;  // Ensure 24-hour format
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 2, 10);
+}
+
+// Read RTC time into buffers
+void RTC_ReadTime(void)
+{
+    // seconds
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, secbuffer + 1, 1, 10);
+
+    // minutes
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, minbuffer + 1, 1, 10);
+
+    // hours
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, hourbuffer + 1, 1, 10);
+
+    // mask upper hour bits
+    hourbuffer[1] &= 0x3F;  // 24-hour format
+}
+
+// Print time via UART
+void UART_PrintTime(void)
+{
+    sprintf(uartBuf, "Time: %02x:%02x:%02x\r\n", hourbuffer[1], minbuffer[1], secbuffer[1]);
+    HAL_UART_Transmit(&huart2, (uint8_t *)uartBuf, strlen(uartBuf), 10);
+}
+
+// Set Alarm 1 on DS3231 (24-hour format)
+void RTC_SetAlarm1(uint8_t hour, uint8_t minute, uint8_t second)
+{
+    // A1 Seconds (0x07)
+    txBuf[0] = RTC_ALARM1_SEC;
+    txBuf[1] = second;  // Match seconds
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
 
-    // Match hour (A2M3=0, MSB cleared)
-    txBuf[0] = RTC_ALARM2_HOUR;
-    txBuf[1] = hour & 0x3F;
+    // A1 Minutes (0x08)
+    txBuf[0] = RTC_ALARM1_MIN;
+    txBuf[1] = minute;  // Match minutes
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
 
-    // Match date (A2M4=0, MSB cleared)
-    txBuf[0] = RTC_ALARM2_DATE;
-    txBuf[1] = date & 0x3F;
+    // A1 Hours (0x09) - 24-hour format
+    txBuf[0] = RTC_ALARM1_HOUR;
+    txBuf[1] = hour & 0x3F;  // Ensure 24-hour format (bit 6 = 0)
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
+
+    // A1 Day/Date (0x0A)
+    txBuf[0] = RTC_ALARM1_DATE;
+    txBuf[1] = 0x80;  // A1M4=1, ignore day/date match
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
 }
 
-// Enable Alarm 2 interrupt
-void RTC_EnableAlarm2(void)
+// Enable Alarm 1 interrupt
+void RTC_EnableAlarm1(void)
 {
+    // Control register (0x0E)
     txBuf[0] = RTC_CONTROL_REG;
-    txBuf[1] = 0x1E; // INTCN=1 (bit2), A2IE=1 (bit1)
+    txBuf[1] = 0x1D;  // INTCN=1 (bit2), A1IE=1 (bit0)
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
 
     // Clear status register (0x0F)
@@ -189,28 +221,84 @@ void RTC_EnableAlarm2(void)
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, HAL_MAX_DELAY);
 }
 
-// Check if Alarm 2 has triggered
-uint8_t RTC_CheckAlarm2(void)
+// Check if Alarm 1 has triggered
+uint8_t RTC_CheckAlarm1(void)
 {
     uint8_t statusReg;
+    
     txBuf[0] = RTC_STATUS_REG;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 1, 10);
     HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, &statusReg, 1, 10);
-    return (statusReg & 0x02); // bit 1 = A2F
+    
+    return (statusReg & 0x01);
 }
 
-// Clear Alarm 2 flag
-void RTC_ClearAlarm2Flag(void)
+// Clear Alarm 1 flag
+void RTC_ClearAlarm1Flag(void)
 {
     uint8_t statusReg;
+    
     txBuf[0] = RTC_STATUS_REG;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 1, 10);
     HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, &statusReg, 1, 10);
-    statusReg &= ~0x02;
+    
+    statusReg &= ~0x01;
+    
     txBuf[0] = RTC_STATUS_REG;
     txBuf[1] = statusReg;
     HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, 10);
 }
+
+// Print message via UART
+void UART_PrintMessage(const char* msg)
+{
+    HAL_UART_Transmit(&huart2, (uint8_t *)msg, strlen(msg), 100);
+}
+
+/* ----- UART Input Processing ----- */
+
+// Process the 6-digit input and set alarm
+void ProcessAlarmInput(void)
+{
+    if (input_index == 6)
+    {
+        // Extract hours, minutes, seconds from input_buffer
+        char hh[3] = {input_buffer[0], input_buffer[1], '\0'};
+        char mm[3] = {input_buffer[2], input_buffer[3], '\0'};
+        char ss[3] = {input_buffer[4], input_buffer[5], '\0'};
+        
+        int hours = atoi(hh);
+        int minutes = atoi(mm);
+        int seconds = atoi(ss);
+        
+        // Validate input
+        if (hours >= 0 && hours < 24 && minutes >= 0 && minutes < 60 && seconds >= 0 && seconds < 60)
+        {
+            // Convert to BCD
+            uint8_t hours_bcd = decToBcd((uint8_t)hours);
+            uint8_t minutes_bcd = decToBcd((uint8_t)minutes);
+            uint8_t seconds_bcd = decToBcd((uint8_t)seconds);
+            
+            // Set the alarm
+            RTC_SetAlarm1(hours_bcd, minutes_bcd, seconds_bcd);
+            RTC_ClearAlarm1Flag();
+            
+            sprintf(uartBuf, "Alarm set to %02d:%02d:%02d (24-hour format)\r\n", hours, minutes, seconds);
+            UART_PrintMessage(uartBuf);
+            UART_PrintMessage("Enter new alarm time (hhmmss): ");
+        }
+        else
+        {
+            UART_PrintMessage("Invalid time! Hours: 00-23, Minutes/Seconds: 00-59\r\n");
+            UART_PrintMessage("Enter alarm time (hhmmss): ");
+        }
+        
+        // Reset input buffer
+        input_index = 0;
+        memset(input_buffer, 0, sizeof(input_buffer));
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -242,38 +330,31 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
-  MX_SPI1_Init();
-  MX_SPI3_Init();
   MX_I2C1_Init();
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
+  
+  // Initialize RTC and check connection
   RTC_Init();
-  UART_PrintMessage("RTC Demo: Full Date/Time & Alarm 2.\r\n");
+  
+  // Set initial time to 14:59:55 (24-hour format)
+  RTC_SetTime(decToBcd(14), decToBcd(59), decToBcd(55));
+  
+  // Set initial Alarm 1 to trigger at 15:00:00
+  RTC_SetAlarm1(decToBcd(15), decToBcd(0), decToBcd(0));
+  
+  // Enable Alarm 1 interrupt
+  RTC_EnableAlarm1();
+  
+  // Print startup messages
+  UART_PrintMessage("\r\n=== DS3231 RTC with UART Alarm Input ===\r\n");
+  UART_PrintMessage("RTC initialized: 14:59:55\r\n");
+  UART_PrintMessage("Default alarm: 15:00:00\r\n");
+  UART_PrintMessage("Enter alarm time (hhmmss, 24-hour format): ");
+  
+  // Enable UART interrupt for receiving
+  HAL_UART_Receive_IT(&huart2, &rx_char, 1);
 
-  // Set time: 18:56:00, day-of-week 2, date 17, month 11, year 25 (BCD)
-  RTC_SetDateTime(0x18, 0x56, 0x00, 0x02, 0x17, 0x11, 0x25);
-
-  // Set Alarm 2: trigger at date 17, hour 18, minute 57
-  RTC_SetAlarm2(0x17, 0x18, 0x57);
-  RTC_EnableAlarm2();
-
-  uint8_t hour, minute, second, day_of_week, date, month, year;
-
-  while (1)
-  {
-    RTC_ReadDateTime(&hour, &minute, &second, &day_of_week, &date, &month, &year);
-    UART_PrintDateTime(hour, minute, second, date, month, year, day_of_week);
-
-    if (RTC_CheckAlarm2())
-    {
-        UART_PrintMessage("ALARM 2 MATCH! Buzzing.\r\n");
-        HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_SET);
-        HAL_Delay(5000);
-        HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_RESET);
-        RTC_ClearAlarm2Flag();
-    }
-
-    HAL_Delay(1000);
-  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -283,6 +364,45 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    
+    // Read and display current time
+    RTC_ReadTime();
+    UART_PrintTime();
+    
+    // Check if alarm has triggered
+    if (RTC_CheckAlarm1())
+    {
+        UART_PrintMessage("\r\n*** ALARM TRIGGERED! ***\r\n");
+        
+        // Turn on buzzer
+        HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_SET);
+        
+        // Blink LED during alarm
+        for (int i = 0; i < 10; i++)
+        {
+            HAL_GPIO_TogglePin(READY_LED_GPIO, READY_LED_PIN);
+            HAL_Delay(500);
+        }
+        
+        // Turn off buzzer and LED
+        HAL_GPIO_WritePin(BUZZER_GPIO, BUZZER_PIN, GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(READY_LED_GPIO, READY_LED_PIN, GPIO_PIN_RESET);
+        
+        // Clear the alarm flag
+        RTC_ClearAlarm1Flag();
+        
+        UART_PrintMessage("Alarm cleared.\r\n");
+        UART_PrintMessage("Enter new alarm time (hhmmss): ");
+    }
+    
+    // Process new alarm input if ready
+    if (new_alarm_ready)
+    {
+        ProcessAlarmInput();
+        new_alarm_ready = 0;
+    }
+    
+    HAL_Delay(1000);  // 1-second delay
   }
   /* USER CODE END 3 */
 }
@@ -396,81 +516,50 @@ static void MX_I2C1_Init(void)
 }
 
 /**
-  * @brief SPI1 Initialization Function
+  * @brief I2C3 Initialization Function
   * @param None
   * @retval None
   */
-static void MX_SPI1_Init(void)
+static void MX_I2C3_Init(void)
 {
 
-  /* USER CODE BEGIN SPI1_Init 0 */
+  /* USER CODE BEGIN I2C3_Init 0 */
 
-  /* USER CODE END SPI1_Init 0 */
+  /* USER CODE END I2C3_Init 0 */
 
-  /* USER CODE BEGIN SPI1_Init 1 */
+  /* USER CODE BEGIN I2C3_Init 1 */
 
-  /* USER CODE END SPI1_Init 1 */
-  /* SPI1 parameter configuration*/
-  hspi1.Instance = SPI1;
-  hspi1.Init.Mode = SPI_MODE_MASTER;
-  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi1.Init.CRCPolynomial = 7;
-  hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x00000C12;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN SPI1_Init 2 */
 
-  /* USER CODE END SPI1_Init 2 */
-
-}
-
-/**
-  * @brief SPI3 Initialization Function
-  * @param None
-  * @retval None
+  /** Configure Analogue filter
   */
-static void MX_SPI3_Init(void)
-{
-
-  /* USER CODE BEGIN SPI3_Init 0 */
-
-  /* USER CODE END SPI3_Init 0 */
-
-  /* USER CODE BEGIN SPI3_Init 1 */
-
-  /* USER CODE END SPI3_Init 1 */
-  /* SPI3 parameter configuration*/
-  hspi3.Instance = SPI3;
-  hspi3.Init.Mode = SPI_MODE_SLAVE;
-  hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi3.Init.CRCPolynomial = 7;
-  hspi3.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi3.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
-  if (HAL_SPI_Init(&hspi3) != HAL_OK)
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
   {
     Error_Handler();
   }
-  /* USER CODE BEGIN SPI3_Init 2 */
 
-  /* USER CODE END SPI3_Init 2 */
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
 
 }
 
@@ -516,6 +605,7 @@ static void MX_USART2_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
 /* USER CODE BEGIN MX_GPIO_Init_1 */
 /* USER CODE END MX_GPIO_Init_1 */
 
@@ -524,11 +614,98 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3|GPIO_PIN_4, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PA5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB3 PB4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
 /* USER CODE BEGIN MX_GPIO_Init_2 */
 /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief  Rx Transfer completed callback
+  * @param  huart: UART handle
+  * @retval None
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        // Check if character is a digit
+        if (rx_char >= '0' && rx_char <= '9')
+        {
+            if (input_index < 6)
+            {
+                input_buffer[input_index++] = rx_char;
+                
+                // Echo the character back
+                HAL_UART_Transmit(&huart2, &rx_char, 1, 10);
+                
+                // If we have 6 digits, set flag to process
+                if (input_index == 6)
+                {
+                    UART_PrintMessage("\r\n");
+                    new_alarm_ready = 1;
+                }
+            }
+        }
+        else if (rx_char == '\r' || rx_char == '\n')
+        {
+            // Enter pressed - check if we have incomplete data
+            if (input_index > 0 && input_index < 6)
+            {
+                UART_PrintMessage("\r\nError: Enter exactly 6 digits (hhmmss)!\r\n");
+                UART_PrintMessage("Enter alarm time (hhmmss): ");
+                input_index = 0;
+                memset(input_buffer, 0, sizeof(input_buffer));
+            }
+        }
+        else if (rx_char == 0x08 || rx_char == 0x7F)  // Backspace or DEL
+        {
+            if (input_index > 0)
+            {
+                input_index--;
+                input_buffer[input_index] = '\0';
+                // Echo backspace sequence
+                UART_PrintMessage("\b \b");
+            }
+        }
+        else if (rx_char == 0x1B)  // ESC key - clear buffer
+        {
+            if (input_index > 0)
+            {
+                // Clear the line
+                for (int i = 0; i < input_index; i++)
+                {
+                    UART_PrintMessage("\b \b");
+                }
+                input_index = 0;
+                memset(input_buffer, 0, sizeof(input_buffer));
+            }
+        }
+        
+        // Re-enable receive interrupt for next character
+        HAL_UART_Receive_IT(&huart2, &rx_char, 1);
+    }
+}
 
 /* USER CODE END 4 */
 
