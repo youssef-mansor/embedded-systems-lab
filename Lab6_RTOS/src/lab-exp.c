@@ -19,7 +19,6 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include <string.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -53,9 +52,8 @@ osThreadId Task3_UARTReceiHandle;
 osMessageQId ISR_to_calculationHandle;
 osMessageQId calculation_to_printHandle;
 /* USER CODE BEGIN PV */
-osSemaphoreId uart_semaphoreHandle;  // Binary semaphore handle
-uint8_t rx_data;                     // For interrupt-driven reception
-char input_buffer[16];               // Buffer for incoming expression
+uint8_t rx_data;                  // For interrupt-driven reception
+char input_buffer[16];            // Buffer for incoming expression
 uint8_t buffer_index = 0;
 /* USER CODE END PV */
 
@@ -110,7 +108,8 @@ int main(void)
   MX_GPIO_Init();
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
-
+	HAL_UART_Receive_IT(&huart2, &rx_data, 1);
+  
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
@@ -118,12 +117,7 @@ int main(void)
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* Create binary semaphore */
-  osSemaphoreDef(uart_semaphore);
-  uart_semaphoreHandle = osSemaphoreCreate(osSemaphore(uart_semaphore), 1);
-  
-  /* Take the semaphore initially so task waits until ISR gives it */
-  osSemaphoreWait(uart_semaphoreHandle, 0);
+  /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -160,9 +154,6 @@ int main(void)
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
-  /* Start UART interrupt reception AFTER semaphore and tasks are created */
-  HAL_UART_Receive_IT(&huart2, &rx_data, 1);
-  
   /* Start scheduler */
   osKernelStart();
   /* We should never get here as control is now taken by the scheduler */
@@ -316,73 +307,11 @@ static void MX_GPIO_Init(void)
 void start_calculation_task(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-    uint8_t received_byte;
-    char expr[INPUT_BUFFER_SIZE];
-    uint8_t idx = 0;
-
-    for (;;)
-    {
-        if (xQueueReceive(ISR_to_calculationHandle, &received_byte, portMAX_DELAY) == pdTRUE)
-        {
-            if (received_byte != '\n') // Not end of expression
-            {
-                if (idx < INPUT_BUFFER_SIZE - 1)
-                    expr[idx++] = received_byte;
-            }
-            else
-            {
-                expr[idx] = '\0'; // null-terminate
-
-                // Evaluate simple digit(+or-)digit expression
-                if (idx == 3 && (expr[1] == '+' || expr[1] == '-'))
-                {
-                    int a = expr[0] - '0';
-                    char op = expr[1];
-                    int b = expr[2] - '0';
-                    int result = (op == '+') ? (a + b) : (a - b);
-                    
-                    // Echo expression to print queue
-                    for (uint8_t i = 0; i < idx; i++)
-                        xQueueSend(calculation_to_printHandle, &expr[i], portMAX_DELAY);
-                    
-                    // Send newline to print queue
-                    uint8_t nl = '\n';
-                    uint8_t cr = '\r';
-                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
-                    xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
-
-                    // Send each digit of result to print queue
-                    if (result < 0)
-                    {
-                        // Handle negative results
-                        uint8_t minus = '-';
-                        xQueueSend(calculation_to_printHandle, &minus, portMAX_DELAY);
-                        result = -result;
-                    }
-                    
-                    if (result < 10)
-                    {
-                        uint8_t c = result + '0';
-                        xQueueSend(calculation_to_printHandle, &c, portMAX_DELAY);
-                    }
-                    else
-                    {
-                        uint8_t tens = (result / 10) + '0';
-                        uint8_t ones = (result % 10) + '0';
-                        xQueueSend(calculation_to_printHandle, &tens, portMAX_DELAY);
-                        xQueueSend(calculation_to_printHandle, &ones, portMAX_DELAY);
-                    }
-
-                    // Send newline to print queue
-                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
-                    xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
-                }
-
-                idx = 0; // reset buffer
-            }
-        }
-        vTaskDelay(1);
-    }
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
   /* USER CODE END 5 */
 }
 
@@ -392,16 +321,34 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART2)
     {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        
-        // Disable UART interrupt
-        HAL_NVIC_DisableIRQ(USART2_IRQn);
-        
-        // Give semaphore to unblock Task3_UARTReceive
-        xSemaphoreGiveFromISR(uart_semaphoreHandle, &xHigherPriorityTaskWoken);
-        
-        // Yield to higher priority task if needed
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        // Only accept digits or '+'/'-' or '\r'
+        if (((rx_data >= '0' && rx_data <= '9') || rx_data == '+' || rx_data == '-' || rx_data == '\r')
+             && buffer_index < INPUT_BUFFER_SIZE - 1)
+        {
+            if (rx_data != '\r')
+            {
+                // Store character in buffer
+                input_buffer[buffer_index++] = rx_data;
+            }
+            else
+            {
+								// Send all buffered characters to queue
+								for (uint8_t i = 0; i < buffer_index; i++)
+								{
+										xQueueSendFromISR(ISR_to_calculationHandle, &input_buffer[i], NULL);
+								}
+
+								// Optional: send a special delimiter to mark end of expression
+								char delimiter = '\n';
+								xQueueSendFromISR(ISR_to_calculationHandle, &delimiter, NULL);
+								
+                // Reset buffer for next input
+                buffer_index = 0;
+            }
+        }
+
+        // Re-arm UART reception
+        HAL_UART_Receive_IT(&huart2, &rx_data, 1);
     }
 }
 
@@ -414,17 +361,11 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 void start_print_task(void const * argument)
 {
   /* USER CODE BEGIN start_print_task */
-    uint8_t c;
-    
-    for (;;)
-    {
-        if (xQueueReceive(calculation_to_printHandle, &c, portMAX_DELAY) == pdTRUE)
-        {
-            taskENTER_CRITICAL();
-            HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
-            taskEXIT_CRITICAL();
-        }
-    }
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
   /* USER CODE END start_print_task */
 }
 
@@ -438,45 +379,11 @@ void start_print_task(void const * argument)
 void start_Task3_UARTReceive(void const * argument)
 {
   /* USER CODE BEGIN start_Task3_UARTReceive */
-    for (;;)
-    {
-        // Wait for semaphore from ISR (blocks until data arrives)
-        if (osSemaphoreWait(uart_semaphoreHandle, osWaitForever) == osOK)
-        {
-            // Process the received character
-            // Only accept digits or '+'/'-' or '\r'
-            if (((rx_data >= '0' && rx_data <= '9') || rx_data == '+' || rx_data == '-' || rx_data == '\r')
-                 && buffer_index < INPUT_BUFFER_SIZE - 1)
-            {
-                if (rx_data != '\r')
-                {
-                    // Store character in buffer
-                    input_buffer[buffer_index++] = rx_data;
-                }
-                else
-                {
-                    // Send all buffered characters to queue
-                    for (uint8_t i = 0; i < buffer_index; i++)
-                    {
-                        xQueueSend(ISR_to_calculationHandle, &input_buffer[i], portMAX_DELAY);
-                    }
-
-                    // Send delimiter to mark end of expression
-                    char delimiter = '\n';
-                    xQueueSend(ISR_to_calculationHandle, &delimiter, portMAX_DELAY);
-                    
-                    // Reset buffer for next input
-                    buffer_index = 0;
-                }
-            }
-            
-            // Re-arm UART reception
-            HAL_UART_Receive_IT(&huart2, &rx_data, 1);
-            
-            // Re-enable UART interrupt
-            HAL_NVIC_EnableIRQ(USART2_IRQn);
-        }
-    }
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
   /* USER CODE END start_Task3_UARTReceive */
 }
 
