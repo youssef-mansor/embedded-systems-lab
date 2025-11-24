@@ -19,11 +19,11 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "cmsis_os.h"
-#include <string.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -38,34 +38,49 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define STACK_BYTES(x) ((x) / sizeof(StackType_t))
-#define INPUT_BUFFER_SIZE 8
+// I2C address definitions
+#define RTC_ADDR_WRITE 0xD0
+#define RTC_ADDR_READ  0xD1
 
+// RTC Register addresses
+#define RTC_SECONDS_REG    0x00
+#define RTC_MINUTES_REG    0x01
+#define RTC_HOURS_REG      0x02
+#define RTC_TEMP_MSB_REG   0x11
+#define RTC_TEMP_LSB_REG   0x12
 
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+
 UART_HandleTypeDef huart2;
 
-osThreadId calculation_tasHandle;
-osThreadId print_taskHandle;
-osThreadId Task3_UARTReceiHandle;
-osMessageQId ISR_to_calculationHandle;
-osMessageQId calculation_to_printHandle;
+osThreadId TimeDisplayTaskHandle;
+osThreadId TempDisplayTaskHandle;
 /* USER CODE BEGIN PV */
-osSemaphoreId uart_semaphoreHandle;  // Binary semaphore handle
-uint8_t rx_data;                     // For interrupt-driven reception
-char input_buffer[16];               // Buffer for incoming expression
-uint8_t buffer_index = 0;
+osMutexId uart_mutexHandle;  // Mutex for UART protection
+
+// RTC time buffers
+uint8_t secbuffer[2], minbuffer[2], hourbuffer[2];
+
+// Temperature buffers
+uint8_t temp_msb_buffer[2];
+uint8_t temp_lsb_buffer[2];
+
+// UART formatting buffers
+char time_uart_buf[50];
+char temp_uart_buf[50];
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
-void start_calculation_task(void const * argument);
-void start_print_task(void const * argument);
-void start_Task3_UARTReceive(void const * argument);
+static void MX_I2C1_Init(void);
+void start_TimeDisplayTask(void const * argument);
+void start_TempDisplayTask(void const * argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -74,10 +89,89 @@ void start_Task3_UARTReceive(void const * argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void uart2_send_string(const char *str)
+// Check if RTC is ready
+void RTC_Init(void)
 {
-    HAL_UART_Transmit(&huart2, (uint8_t*)str, strlen(str), HAL_MAX_DELAY);
+    if (HAL_I2C_IsDeviceReady(&hi2c1, RTC_ADDR_WRITE, 10, HAL_MAX_DELAY) == HAL_OK)
+    {
+        // RTC detected - blink LED to indicate
+        for (int i = 0; i < 6; i++)
+        {
+            HAL_GPIO_TogglePin(LD3_GPIO_Port, LD3_Pin);
+            HAL_Delay(200);
+        }
+    }
 }
+
+// Set RTC time (24h format, BCD)
+void RTC_SetTime(uint8_t hour, uint8_t minute, uint8_t second)
+{
+    uint8_t txBuf[2];
+    
+    // Set seconds
+    txBuf[0] = RTC_SECONDS_REG;
+    txBuf[1] = second;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, 10);
+
+    // Set minutes
+    txBuf[0] = RTC_MINUTES_REG;
+    txBuf[1] = minute;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, 10);
+
+    // Set hours (24h format)
+    txBuf[0] = RTC_HOURS_REG;
+    txBuf[1] = hour;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, txBuf, 2, 10);
+}
+
+// Read RTC time
+void RTC_ReadTime(void)
+{
+    // Read seconds
+    secbuffer[0] = RTC_SECONDS_REG;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, secbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, secbuffer + 1, 1, 10);
+
+    // Read minutes
+    minbuffer[0] = RTC_MINUTES_REG;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, minbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, minbuffer + 1, 1, 10);
+
+    // Read hours
+    hourbuffer[0] = RTC_HOURS_REG;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, hourbuffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, hourbuffer + 1, 1, 10);
+    
+    // Mask to 24h format
+    hourbuffer[1] &= 0x3F;
+}
+
+// Read DS3231 temperature (10-bit resolution)
+float RTC_ReadTemperature(void)
+{
+    int8_t temp_msb;
+    uint8_t temp_lsb;
+    float temperature;
+    
+    // Read MSB (register 0x11) - integer part, 2's complement
+    temp_msb_buffer[0] = RTC_TEMP_MSB_REG;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, temp_msb_buffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, temp_msb_buffer + 1, 1, 10);
+    temp_msb = (int8_t)temp_msb_buffer[1];
+    
+    // Read LSB (register 0x12) - fractional part (upper 2 bits)
+    temp_lsb_buffer[0] = RTC_TEMP_LSB_REG;
+    HAL_I2C_Master_Transmit(&hi2c1, RTC_ADDR_WRITE, temp_lsb_buffer, 1, 10);
+    HAL_I2C_Master_Receive(&hi2c1, RTC_ADDR_READ, temp_lsb_buffer + 1, 1, 10);
+    temp_lsb = temp_lsb_buffer[1];
+    
+    // Combine: integer part + (fractional >> 6) * 0.25
+    // Upper 2 bits of LSB represent 0.25°C increments
+    temperature = (float)temp_msb + ((temp_lsb >> 6) * 0.25f);
+    
+    return temperature;
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -109,60 +203,49 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART2_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-
+  
+  // Initialize RTC and set initial time
+  RTC_Init();
+  
+  // Set time to 14:30:00 (2:30 PM in 24h format)
+  // 0x14 = 14 hours, 0x30 = 30 minutes, 0x00 = 0 seconds (BCD format)
+  RTC_SetTime(0x14, 0x30, 0x00);
+  
   /* USER CODE END 2 */
 
   /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
+  // Create mutex for UART protection
+  osMutexDef(uart_mutex);
+  uart_mutexHandle = osMutexCreate(osMutex(uart_mutex));
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* Create binary semaphore */
-  osSemaphoreDef(uart_semaphore);
-  uart_semaphoreHandle = osSemaphoreCreate(osSemaphore(uart_semaphore), 1);
-  
-  /* Take the semaphore initially so task waits until ISR gives it */
-  osSemaphoreWait(uart_semaphoreHandle, 0);
+  /* add semaphores, ... */
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
   /* USER CODE END RTOS_TIMERS */
 
-  /* Create the queue(s) */
-  /* definition and creation of ISR_to_calculation */
-  osMessageQDef(ISR_to_calculation, 16, uint8_t);
-  ISR_to_calculationHandle = osMessageCreate(osMessageQ(ISR_to_calculation), NULL);
-
-  /* definition and creation of calculation_to_print */
-  osMessageQDef(calculation_to_print, 16, uint8_t);
-  calculation_to_printHandle = osMessageCreate(osMessageQ(calculation_to_print), NULL);
-
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
-  /* definition and creation of calculation_tas */
-  osThreadDef(calculation_tas, start_calculation_task, osPriorityNormal, 0, 128);
-  calculation_tasHandle = osThreadCreate(osThread(calculation_tas), NULL);
+  /* definition and creation of TimeDisplayTask */
+  osThreadDef(TimeDisplayTask, start_TimeDisplayTask, osPriorityNormal, 0, 256);
+  TimeDisplayTaskHandle = osThreadCreate(osThread(TimeDisplayTask), NULL);
 
-  /* definition and creation of print_task */
-  osThreadDef(print_task, start_print_task, osPriorityLow, 0, 128);
-  print_taskHandle = osThreadCreate(osThread(print_task), NULL);
-
-  /* definition and creation of Task3_UARTRecei */
-  osThreadDef(Task3_UARTRecei, start_Task3_UARTReceive, osPriorityAboveNormal, 0, 128);
-  Task3_UARTReceiHandle = osThreadCreate(osThread(Task3_UARTRecei), NULL);
+  /* definition and creation of TempDisplayTask */
+  osThreadDef(TempDisplayTask, start_TempDisplayTask, osPriorityNormal, 0, 256);
+  TempDisplayTaskHandle = osThreadCreate(osThread(TempDisplayTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
-  /* Start UART interrupt reception AFTER semaphore and tasks are created */
-  HAL_UART_Receive_IT(&huart2, &rx_data, 1);
-  
   /* Start scheduler */
   osKernelStart();
   /* We should never get here as control is now taken by the scheduler */
@@ -238,6 +321,54 @@ void SystemClock_Config(void)
 }
 
 /**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x00707CBB;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -306,178 +437,75 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_start_calculation_task */
+/* USER CODE BEGIN Header_start_TimeDisplayTask */
 /**
-  * @brief  Function implementing the calculation_tas thread.
+  * @brief  Function implementing the TimeDisplayTask thread.
   * @param  argument: Not used
   * @retval None
   */
-/* USER CODE END Header_start_calculation_task */
-void start_calculation_task(void const * argument)
+/* USER CODE END Header_start_TimeDisplayTask */
+void start_TimeDisplayTask(void const * argument)
 {
   /* USER CODE BEGIN 5 */
-    uint8_t received_byte;
-    char expr[INPUT_BUFFER_SIZE];
-    uint8_t idx = 0;
-
     for (;;)
     {
-        if (xQueueReceive(ISR_to_calculationHandle, &received_byte, portMAX_DELAY) == pdTRUE)
-        {
-            if (received_byte != '\n') // Not end of expression
-            {
-                if (idx < INPUT_BUFFER_SIZE - 1)
-                    expr[idx++] = received_byte;
-            }
-            else
-            {
-                expr[idx] = '\0'; // null-terminate
-
-                // Evaluate simple digit(+or-)digit expression
-                if (idx == 3 && (expr[1] == '+' || expr[1] == '-'))
-                {
-                    int a = expr[0] - '0';
-                    char op = expr[1];
-                    int b = expr[2] - '0';
-                    int result = (op == '+') ? (a + b) : (a - b);
-                    
-                    // Echo expression to print queue
-                    for (uint8_t i = 0; i < idx; i++)
-                        xQueueSend(calculation_to_printHandle, &expr[i], portMAX_DELAY);
-                    
-                    // Send newline to print queue
-                    uint8_t nl = '\n';
-                    uint8_t cr = '\r';
-                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
-                    xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
-
-                    // Send each digit of result to print queue
-                    if (result < 0)
-                    {
-                        // Handle negative results
-                        uint8_t minus = '-';
-                        xQueueSend(calculation_to_printHandle, &minus, portMAX_DELAY);
-                        result = -result;
-                    }
-                    
-                    if (result < 10)
-                    {
-                        uint8_t c = result + '0';
-                        xQueueSend(calculation_to_printHandle, &c, portMAX_DELAY);
-                    }
-                    else
-                    {
-                        uint8_t tens = (result / 10) + '0';
-                        uint8_t ones = (result % 10) + '0';
-                        xQueueSend(calculation_to_printHandle, &tens, portMAX_DELAY);
-                        xQueueSend(calculation_to_printHandle, &ones, portMAX_DELAY);
-                    }
-
-                    // Send newline to print queue
-                    xQueueSend(calculation_to_printHandle, &nl, portMAX_DELAY);
-                    xQueueSend(calculation_to_printHandle, &cr, portMAX_DELAY);
-                }
-
-                idx = 0; // reset buffer
-            }
-        }
-        vTaskDelay(1);
+        // Read current time from RTC
+        RTC_ReadTime();
+        
+        // Format time string (BCD to decimal conversion for display)
+        sprintf(time_uart_buf, "Time: %02x:%02x:%02x\r\n", 
+                hourbuffer[1], minbuffer[1], secbuffer[1]);
+        
+        // Take mutex to protect UART
+        osMutexWait(uart_mutexHandle, osWaitForever);
+        
+        // Transmit time string
+        HAL_UART_Transmit(&huart2, (uint8_t *)time_uart_buf, 
+                          strlen(time_uart_buf), HAL_MAX_DELAY);
+        
+        // Release mutex
+        osMutexRelease(uart_mutexHandle);
+        
+        // Delay 1 second before next update
+        osDelay(1000);
     }
   /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_start_print_task */
-/* UART Rx Complete Callback --------------------------------------------------*/
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart->Instance == USART2)
-    {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        
-        // Disable UART interrupt
-        HAL_NVIC_DisableIRQ(USART2_IRQn);
-        
-        // Give semaphore to unblock Task3_UARTReceive
-        xSemaphoreGiveFromISR(uart_semaphoreHandle, &xHigherPriorityTaskWoken);
-        
-        // Yield to higher priority task if needed
-        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-    }
-}
-
+/* USER CODE BEGIN Header_start_TempDisplayTask */
 /**
-* @brief Function implementing the print_task thread.
+* @brief Function implementing the TempDisplayTask thread.
 * @param argument: Not used
 * @retval None
 */
-/* USER CODE END Header_start_print_task */
-void start_print_task(void const * argument)
+/* USER CODE END Header_start_TempDisplayTask */
+void start_TempDisplayTask(void const * argument)
 {
-  /* USER CODE BEGIN start_print_task */
-    uint8_t c;
+  /* USER CODE BEGIN start_TempDisplayTask */
+    float temperature;
     
     for (;;)
     {
-        if (xQueueReceive(calculation_to_printHandle, &c, portMAX_DELAY) == pdTRUE)
-        {
-            taskENTER_CRITICAL();
-            HAL_UART_Transmit(&huart2, &c, 1, HAL_MAX_DELAY);
-            taskEXIT_CRITICAL();
-        }
+        // Read temperature from DS3231
+        temperature = RTC_ReadTemperature();
+        
+        // Format temperature string
+        sprintf(temp_uart_buf, "Temp: %.2f°C\r\n", temperature);
+        
+        // Take mutex to protect UART
+        osMutexWait(uart_mutexHandle, osWaitForever);
+        
+        // Transmit temperature string
+        HAL_UART_Transmit(&huart2, (uint8_t *)temp_uart_buf, 
+                          strlen(temp_uart_buf), HAL_MAX_DELAY);
+        
+        // Release mutex
+        osMutexRelease(uart_mutexHandle);
+        
+        // Delay 2 seconds before next update (different from time task)
+        osDelay(2000);
     }
-  /* USER CODE END start_print_task */
-}
-
-/* USER CODE BEGIN Header_start_Task3_UARTReceive */
-/**
-* @brief Function implementing the Task3_UARTRecei thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_start_Task3_UARTReceive */
-void start_Task3_UARTReceive(void const * argument)
-{
-  /* USER CODE BEGIN start_Task3_UARTReceive */
-    for (;;)
-    {
-        // Wait for semaphore from ISR (blocks until data arrives)
-        if (osSemaphoreWait(uart_semaphoreHandle, osWaitForever) == osOK)
-        {
-            // Process the received character
-            // Only accept digits or '+'/'-' or '\r'
-            if (((rx_data >= '0' && rx_data <= '9') || rx_data == '+' || rx_data == '-' || rx_data == '\r')
-                 && buffer_index < INPUT_BUFFER_SIZE - 1)
-            {
-                if (rx_data != '\r')
-                {
-                    // Store character in buffer
-                    input_buffer[buffer_index++] = rx_data;
-                }
-                else
-                {
-                    // Send all buffered characters to queue
-                    for (uint8_t i = 0; i < buffer_index; i++)
-                    {
-                        xQueueSend(ISR_to_calculationHandle, &input_buffer[i], portMAX_DELAY);
-                    }
-
-                    // Send delimiter to mark end of expression
-                    char delimiter = '\n';
-                    xQueueSend(ISR_to_calculationHandle, &delimiter, portMAX_DELAY);
-                    
-                    // Reset buffer for next input
-                    buffer_index = 0;
-                }
-            }
-            
-            // Re-arm UART reception
-            HAL_UART_Receive_IT(&huart2, &rx_data, 1);
-            
-            // Re-enable UART interrupt
-            HAL_NVIC_EnableIRQ(USART2_IRQn);
-        }
-    }
-  /* USER CODE END start_Task3_UARTReceive */
+  /* USER CODE END start_TempDisplayTask */
 }
 
 /**

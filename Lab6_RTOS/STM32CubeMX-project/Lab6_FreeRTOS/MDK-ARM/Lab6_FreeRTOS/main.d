@@ -25,6 +25,8 @@ lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_exti.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_flash.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_flash_ex.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_flash_ramfunc.h
+lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_i2c.h
+lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_i2c_ex.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_pwr.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_pwr_ex.h
 lab6_freertos\main.o: ../Drivers/STM32L4xx_HAL_Driver/Inc/stm32l4xx_hal_tim.h
@@ -45,4 +47,5 @@ lab6_freertos\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/timers.
 lab6_freertos\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/queue.h
 lab6_freertos\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/semphr.h
 lab6_freertos\main.o: ../Middlewares/Third_Party/FreeRTOS/Source/include/event_groups.h
+lab6_freertos\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\stdio.h
 lab6_freertos\main.o: C:\Keil_v5\ARM\ARMCC\Bin\..\include\string.h

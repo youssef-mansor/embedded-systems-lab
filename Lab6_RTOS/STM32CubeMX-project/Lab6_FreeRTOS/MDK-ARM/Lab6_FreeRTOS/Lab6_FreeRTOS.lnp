@@ -18,6 +18,8 @@
 "lab6_freertos\stm32l4xx_hal_pwr_ex.o"
 "lab6_freertos\stm32l4xx_hal_cortex.o"
 "lab6_freertos\stm32l4xx_hal_exti.o"
+"lab6_freertos\stm32l4xx_hal_i2c.o"
+"lab6_freertos\stm32l4xx_hal_i2c_ex.o"
 "lab6_freertos\stm32l4xx_hal_tim.o"
 "lab6_freertos\stm32l4xx_hal_tim_ex.o"
 "lab6_freertos\stm32l4xx_hal_uart.o"
