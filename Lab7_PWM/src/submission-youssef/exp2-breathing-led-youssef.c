@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : LED Breathing Effect using PWM on PA8
+  * @brief          : PWM-based LED intensity modulation with breathing pattern
   ******************************************************************************
   * @attention
   *
@@ -28,14 +28,18 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef enum {
+    FADE_UP,
+    FADE_DOWN
+} FadeDirection_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PWM_PERIOD 999        // ARR value for 1kHz PWM frequency
-#define FADE_STEP 5           // Brightness change step
-#define FADE_DELAY 10         // Delay in ms between steps
+#define MAX_INTENSITY 999
+#define MIN_INTENSITY 0
+#define INTENSITY_INCREMENT 5
+#define UPDATE_INTERVAL_MS 10
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +53,8 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+volatile uint16_t current_intensity = MIN_INTENSITY;
+volatile FadeDirection_t fade_state = FADE_UP;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,11 +63,54 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void UpdateLedIntensity(void);
+void AdjustBrightness(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// Apply current intensity value to PWM output
+void UpdateLedIntensity(void)
+{
+    htim1.Instance->CCR1 = current_intensity;
+}
+
+// Compute next brightness level based on fade direction
+void AdjustBrightness(void)
+{
+    if (fade_state == FADE_UP)
+    {
+        // Increase brightness gradually
+        current_intensity += INTENSITY_INCREMENT;
+        
+        // Check if we've reached maximum
+        if (current_intensity >= MAX_INTENSITY)
+        {
+            current_intensity = MAX_INTENSITY;
+            fade_state = FADE_DOWN;  // Switch to fading down
+        }
+    }
+    else  // FADE_DOWN
+    {
+        // Decrease brightness gradually
+        if (current_intensity >= INTENSITY_INCREMENT)
+        {
+            current_intensity -= INTENSITY_INCREMENT;
+        }
+        else
+        {
+            current_intensity = MIN_INTENSITY;
+        }
+        
+        // Check if we've reached minimum
+        if (current_intensity <= MIN_INTENSITY)
+        {
+            current_intensity = MIN_INTENSITY;
+            fade_state = FADE_UP;  // Switch to fading up
+        }
+    }
+}
 
 /* USER CODE END 0 */
 
@@ -73,8 +121,7 @@ static void MX_TIM1_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  int16_t brightness = 0;    // Use signed int to prevent underflow issues
-  int8_t direction = 1;      // 1 for increasing, -1 for decreasing
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -99,7 +146,7 @@ int main(void)
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   
-  // Start PWM generation on TIM1 Channel 1 (PA8)
+  // Enable PWM output on channel 1
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
@@ -112,26 +159,14 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     
-    // Update LED brightness by modifying duty cycle
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)brightness);
+    // Step 1: Calculate next brightness value
+    AdjustBrightness();
     
-    // Delay for smooth visual effect
-    HAL_Delay(FADE_DELAY);
+    // Step 2: Apply to LED via PWM
+    UpdateLedIntensity();
     
-    // Change brightness in current direction
-    brightness += (direction * FADE_STEP);
-    
-    // Check boundaries and reverse direction
-    if (brightness >= PWM_PERIOD)
-    {
-      brightness = PWM_PERIOD;
-      direction = -1;  // Start fading out
-    }
-    else if (brightness <= 0)
-    {
-      brightness = 0;
-      direction = 1;   // Start fading in
-    }
+    // Step 3: Wait before next update
+    HAL_Delay(UPDATE_INTERVAL_MS);
   }
   /* USER CODE END 3 */
 }
@@ -219,9 +254,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 31;           // 32MHz / (31+1) = 1MHz timer clock
+  htim1.Init.Prescaler = 31;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = PWM_PERIOD;      // 1MHz / (999+1) = 1kHz PWM frequency
+  htim1.Init.Period = MAX_INTENSITY;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -246,7 +281,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;                 // Start with 0% duty cycle (LED off)
+  sConfigOC.Pulse = MIN_INTENSITY;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;

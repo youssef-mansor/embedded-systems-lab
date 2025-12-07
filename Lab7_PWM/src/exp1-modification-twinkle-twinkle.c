@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : LED Breathing Effect using PWM on PA8
+  * @brief          : Musical tone generator - Twinkle Twinkle Little Star
   ******************************************************************************
   * @attention
   *
@@ -33,9 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PWM_PERIOD 999        // ARR value for 1kHz PWM frequency
-#define FADE_STEP 5           // Brightness change step
-#define FADE_DELAY 10         // Delay in ms between steps
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +47,38 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+// Musical note frequencies in Hz (Middle octave C4-B4)
+// Do=C4, Re=D4, Mi=E4, Fa=F4, Sol=G4, La=A4, Ti=B4
+#define C4  262   // Do
+#define D4  294   // Re
+#define E4  330   // Mi
+#define F4  349   // Fa
+#define G4  392   // Sol
+#define A4  440   // La
+#define B4  494   // Ti
+#define C5  523   // Do (upper octave)
 
+// Timer clock frequency = 32 MHz (from your system clock config)
+#define TIMER_CLOCK 32000000
+
+// Song: "Twinkle Twinkle Little Star" (20 notes)
+// C C G G A A G - F F E E D D C - G G F F E E D - G G F F E E D
+uint16_t song_notes[20] = {
+    C4, C4, G4, G4, A4, A4, G4,  // "Twinkle twinkle little star"
+    F4, F4, E4, E4, D4, D4, C4,  // "How I wonder what you are"
+    G4, G4, F4, F4, E4, E4        // "Up above the world so high"
+};
+
+// Note durations in milliseconds (quarter notes = 500ms, half notes = 1000ms)
+uint16_t note_durations[20] = {
+    500, 500, 500, 500, 500, 500, 1000,  // Quarter notes + half note
+    500, 500, 500, 500, 500, 500, 1000,  // Quarter notes + half note
+    500, 500, 500, 500, 500, 500         // Quarter notes
+};
+
+// Prescaler and ARR arrays (computed for each note)
+uint16_t prescalers[20];
+uint32_t arr_values[20];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,12 +87,31 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Calculate_PWM_Parameters(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
+// Calculate PSC and ARR for each note frequency
+void Calculate_PWM_Parameters(void)
+{
+    for (int i = 0; i < 20; i++)
+    {
+        // Target: PWM_freq = TIMER_CLOCK / ((PSC + 1) * (ARR + 1))
+        // We want reasonable resolution, so try PSC = 0 first
+        uint32_t divider = TIMER_CLOCK / song_notes[i];
+        
+        if (divider <= 65536) {
+            // Can use PSC = 0
+            prescalers[i] = 0;
+            arr_values[i] = divider - 1;
+        } else {
+            // Need larger prescaler
+            prescalers[i] = 1;
+            arr_values[i] = (TIMER_CLOCK / (song_notes[i] * 2)) - 1;
+        }
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -73,8 +121,7 @@ static void MX_TIM1_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  int16_t brightness = 0;    // Use signed int to prevent underflow issues
-  int8_t direction = 1;      // 1 for increasing, -1 for decreasing
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -99,40 +146,44 @@ int main(void)
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
   
-  // Start PWM generation on TIM1 Channel 1 (PA8)
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  // Calculate PSC and ARR values for all notes
+  Calculate_PWM_Parameters();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+    while (1)
+    {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-    // Update LED brightness by modifying duty cycle
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)brightness);
-    
-    // Delay for smooth visual effect
-    HAL_Delay(FADE_DELAY);
-    
-    // Change brightness in current direction
-    brightness += (direction * FADE_STEP);
-    
-    // Check boundaries and reverse direction
-    if (brightness >= PWM_PERIOD)
-    {
-      brightness = PWM_PERIOD;
-      direction = -1;  // Start fading out
+        // Play the song
+        for (int i = 0; i < 20; i++)
+        {
+            // Stop timer before changing PSC + ARR
+            HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+
+            // Set new prescaler
+            __HAL_TIM_SET_PRESCALER(&htim1, prescalers[i]);
+
+            // Set new ARR (auto-reload)
+            __HAL_TIM_SET_AUTORELOAD(&htim1, arr_values[i]);
+
+            // Set CCR to 50% duty cycle
+            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, arr_values[i] / 2);
+
+            // Restart timer
+            HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+            // Play note for specified duration
+            HAL_Delay(note_durations[i]);
+        }
+        
+        // Pause between song repetitions
+        HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+        HAL_Delay(2000);
     }
-    else if (brightness <= 0)
-    {
-      brightness = 0;
-      direction = 1;   // Start fading in
-    }
-  }
   /* USER CODE END 3 */
 }
 
@@ -219,9 +270,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 31;           // 32MHz / (31+1) = 1MHz timer clock
+  htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = PWM_PERIOD;      // 1MHz / (999+1) = 1kHz PWM frequency
+  htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -246,7 +297,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;                 // Start with 0% duty cycle (LED off)
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -263,6 +314,9 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
   sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
   if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {

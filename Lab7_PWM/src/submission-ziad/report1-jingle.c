@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : LED Breathing Effect using PWM on PA8
+  * @brief          : Jingle Bells melody generator using PWM tones
   ******************************************************************************
   * @attention
   *
@@ -28,14 +28,16 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct {
+    uint16_t pitch_hz;
+    uint16_t length_ms;
+} ToneNote;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PWM_PERIOD 999        // ARR value for 1kHz PWM frequency
-#define FADE_STEP 5           // Brightness change step
-#define FADE_DELAY 10         // Delay in ms between steps
+#define SYSCLK_HZ 32000000UL
+#define MELODY_LENGTH 18
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -45,11 +47,30 @@
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
-
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+// "Jingle Bells" melody: E-E-E, E-E-E, E-G-C-D-E, F-F-F-F, F-E-E-E
+const ToneNote melody[MELODY_LENGTH] = {
+    {330, 400},  // E4 - "Jin"
+    {330, 400},  // E4 - "gle"
+    {330, 800},  // E4 - "bells"
+    {330, 400},  // E4 - "Jin"
+    {330, 400},  // E4 - "gle"
+    {330, 800},  // E4 - "bells"
+    {330, 400},  // E4 - "Jin"
+    {392, 400},  // G4 - "gle"
+    {262, 400},  // C4 - "all"
+    {294, 400},  // D4 - "the"
+    {330, 800},  // E4 - "way"
+    {349, 400},  // F4 - "Oh"
+    {349, 400},  // F4 - "what"
+    {349, 400},  // F4 - "fun"
+    {349, 400},  // F4 - "it"
+    {349, 400},  // F4 - "is"
+    {330, 400},  // E4 - "to"
+    {330, 800}   // E4 - "ride"
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,11 +79,45 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-
+void PlayTone(uint16_t freq_hz, uint16_t duration_ms);
+void ConfigureTimerFrequency(uint16_t target_freq);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// Reconfigure timer for specific frequency
+void ConfigureTimerFrequency(uint16_t target_freq)
+{
+    uint32_t timer_divisor = SYSCLK_HZ / target_freq;
+    uint16_t psc_val = 0;
+    uint32_t period_val;
+    
+    // Determine optimal prescaler and period
+    if (timer_divisor > 65536) {
+        psc_val = (timer_divisor / 65536) + 1;
+        period_val = (SYSCLK_HZ / (psc_val + 1) / target_freq) - 1;
+    } else {
+        psc_val = 0;
+        period_val = timer_divisor - 1;
+    }
+    
+    // Apply new timer configuration
+    htim1.Instance->PSC = psc_val;
+    htim1.Instance->ARR = period_val;
+    htim1.Instance->CCR1 = period_val >> 1;  // 50% duty cycle
+}
+
+// Play single tone for specified duration
+void PlayTone(uint16_t freq_hz, uint16_t duration_ms)
+{
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    ConfigureTimerFrequency(freq_hz);
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    HAL_Delay(duration_ms);
+    HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    HAL_Delay(50);  // Brief silence between notes
+}
 
 /* USER CODE END 0 */
 
@@ -73,8 +128,7 @@ static void MX_TIM1_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  int16_t brightness = 0;    // Use signed int to prevent underflow issues
-  int8_t direction = 1;      // 1 for increasing, -1 for decreasing
+
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -98,9 +152,6 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  
-  // Start PWM generation on TIM1 Channel 1 (PA8)
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
@@ -111,27 +162,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-    // Update LED brightness by modifying duty cycle
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)brightness);
-    
-    // Delay for smooth visual effect
-    HAL_Delay(FADE_DELAY);
-    
-    // Change brightness in current direction
-    brightness += (direction * FADE_STEP);
-    
-    // Check boundaries and reverse direction
-    if (brightness >= PWM_PERIOD)
+    // Iterate through melody and play each note
+    for (uint8_t note_idx = 0; note_idx < MELODY_LENGTH; note_idx++)
     {
-      brightness = PWM_PERIOD;
-      direction = -1;  // Start fading out
+        PlayTone(melody[note_idx].pitch_hz, melody[note_idx].length_ms);
     }
-    else if (brightness <= 0)
-    {
-      brightness = 0;
-      direction = 1;   // Start fading in
-    }
+    
+    // Long pause before repeating melody
+    HAL_Delay(3000);
   }
   /* USER CODE END 3 */
 }
@@ -219,9 +257,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 31;           // 32MHz / (31+1) = 1MHz timer clock
+  htim1.Init.Prescaler = 0;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = PWM_PERIOD;      // 1MHz / (999+1) = 1kHz PWM frequency
+  htim1.Init.Period = 65535;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -246,7 +284,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;                 // Start with 0% duty cycle (LED off)
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -263,6 +301,9 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
   sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
   if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {

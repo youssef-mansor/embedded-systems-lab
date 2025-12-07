@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : LED Breathing Effect using PWM on PA8
+  * @brief          : Main program body
   ******************************************************************************
   * @attention
   *
@@ -33,9 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define PWM_PERIOD 999        // ARR value for 1kHz PWM frequency
-#define FADE_STEP 5           // Brightness change step
-#define FADE_DELAY 10         // Delay in ms between steps
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,7 +47,23 @@ TIM_HandleTypeDef htim1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+// Frequencies from 100 Hz to 2000 Hz
+uint16_t frequencies[20] = {
+    100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
+    1100, 1200, 1300, 1400, 1500, 1600, 1700, 1800, 1900, 2000
+};
 
+// Corresponding Prescaler values
+uint16_t prescalers[20] = {
+    4, 2, 1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+};
+
+// Corresponding ARR values
+uint32_t arr_values[20] = {
+    63999, 53332, 53332, 39999, 31999, 26665, 22856, 19999, 17776, 15999,
+    14544, 13332, 12306, 11427, 10665, 9999, 9410, 8887, 8420, 7999
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -73,9 +87,9 @@ static void MX_TIM1_Init(void);
 int main(void)
 {
   /* USER CODE BEGIN 1 */
-  int16_t brightness = 0;    // Use signed int to prevent underflow issues
-  int8_t direction = 1;      // 1 for increasing, -1 for decreasing
+
   /* USER CODE END 1 */
+  
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -98,41 +112,49 @@ int main(void)
   MX_USART2_UART_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  
-  // Start PWM generation on TIM1 Channel 1 (PA8)
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1)
+	{
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-    // Update LED brightness by modifying duty cycle
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (uint16_t)brightness);
-    
-    // Delay for smooth visual effect
-    HAL_Delay(FADE_DELAY);
-    
-    // Change brightness in current direction
-    brightness += (direction * FADE_STEP);
-    
-    // Check boundaries and reverse direction
-    if (brightness >= PWM_PERIOD)
+    for (int i = 0; i < 20; i++)   // change to <10 if you want only 10 sounds
     {
-      brightness = PWM_PERIOD;
-      direction = -1;  // Start fading out
+        // ---- STOP TIMER BEFORE CHANGING PSC + ARR ----
+        HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+
+        // Set new prescaler
+        __HAL_TIM_SET_PRESCALER(&htim1, prescalers[i]);
+
+        // Set new ARR (auto-reload)
+        __HAL_TIM_SET_AUTORELOAD(&htim1, arr_values[i]);
+
+        // Optionally set CCR to 50% duty
+        __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, arr_values[i] / 2);
+
+        // ---- RESTART TIMER AFTER UPDATE ----
+        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+        // Wait 0.5 seconds
+        HAL_Delay(500);
     }
-    else if (brightness <= 0)
-    {
-      brightness = 0;
-      direction = 1;   // Start fading in
-    }
-  }
+	}
+	/*
+				// Start PWM signal generation
+		HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+		// Wait for 0.5 second
+		HAL_Delay(500);
+
+		// Stop PWM signal generation
+		HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+		
+		HAL_Delay(100); // Small gap between sounds (optional)
+	*/
   /* USER CODE END 3 */
 }
 
@@ -219,9 +241,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 31;           // 32MHz / (31+1) = 1MHz timer clock
+  htim1.Init.Prescaler = 4;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = PWM_PERIOD;      // 1MHz / (999+1) = 1kHz PWM frequency
+  htim1.Init.Period = 63999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -246,7 +268,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;                 // Start with 0% duty cycle (LED off)
+  sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -263,6 +285,9 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
   sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
   if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
   {
